@@ -23,16 +23,16 @@
        - bad id (404) // выражения по такому id не существует
        - invalid id (500) // некорректный id
    
-  - curl --header "Content-Type:application/json" --data "{\"expression\": \"<выражение>\"}" http://localhost:8080/api/v1/calculate //для отправки выражения на вычисление
+  - curl --header "Content-Type:application/json" --data "{\\"expression\\": \\"<выражение>\\"}" http://localhost:8080/api/v1/calculate //для отправки выражения на вычисление
      - Возможные ответы:  
        - accepted, id = 0 (201) // выражение принято и его id
        - smth goes wrong (500) // ошибка на сервере
        - invalid data <...> (422) // некорректное выражение и ошибка в выражении
 
 Пример взаимодействия с сервером:
-  - curl --header "Content-Type:application/json" --data "{\"expression\": \"10 + -99\"}" http://localhost:8080/api/v1/calculate
+  - curl --header "Content-Type:application/json" --data "{\\"expression\\": \\"10 + -99\\"}" http://localhost:8080/api/v1/calculate
     - accepted, id = 0
-  - curl --header "Content-Type:application/json" --data "{\"expression\": \"(2.5 * 4) + (3.5 * -5)\"}" http://localhost:8080/api/v1/calculate
+  - curl --header "Content-Type:application/json" --data "{\\"expression\\": \\"(2.5 * 4) + (3.5 * -5)\\"}" http://localhost:8080/api/v1/calculate
     - accepted, id = 1
   - curl http://localhost:8080/api/v1/expressions
     - {"expressions":[{"Id":0,"Status":"resolved","Result":-89},{"Id":1,"Status":"resolved","Result":-7.5}]}
@@ -53,7 +53,3 @@
 
   - Для количества возможных агентов
      - COMPUTING_POWER // по умолчанию равен 10
-
-
-
-!если что-то пошло не так! -> telegram: @gduebsdh1
