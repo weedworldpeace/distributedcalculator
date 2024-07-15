@@ -1,0 +1,22 @@
+syntax = "proto3";
+package calculator;
+option go_package = "github.com/weedworldpeace/distributedcalculator/proto";
+import "google/protobuf/empty.proto";
+
+message TaskGetResponse {
+    int32 id = 1;
+    string arg1 = 2;
+    string arg2 = 3;
+    string operation = 4;
+    int32 operation_time = 5;
+}
+
+message TaskPostRequest {
+    int32 id = 1;
+    string resultat = 2;
+}
+
+service CalculatorService {
+    rpc TaskGet (google.protobuf.Empty) returns (TaskGetResponse);
+    rpc TaskPost (TaskPostRequest) returns (google.protobuf.Empty);
+}

@@ -1,36 +1,17 @@
 package agent
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
+	"log"
 	"os"
 	"strconv"
 	"time"
+
+	pb "github.com/weedworldpeace/distributedcalculator/proto"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
-
-type forreqget struct {
-	Id int `json:"id"`
-	Arg1 string `json:"arg1"`
-	Arg2 string `json:"arg2"`
-	Operation string `json:"operation"`
-	Operation_time int `json:"operation_time"`
-}
-
-type forreqpost struct {
-	Id int `json:"id"`
-	Resultat string `json:"result"`
-}
-
-func NewDataGet() *forreqget{
-	return &forreqget{}
-}
-
-func NewDataPost() *forreqpost{
-	return &forreqpost{}
-}
 
 func Agent() {
 	comp1 := os.Getenv("COMPUTING_POWER")
@@ -41,68 +22,41 @@ func Agent() {
 	if err != nil {
 		fmt.Println(err)
 	}
-	cl := &http.Client{}
-	reqget, _ := http.NewRequest(http.MethodGet, "http://localhost:8080/internal/task", nil)
+
+	host := "localhost"
+	port := "5000"
+	addr := fmt.Sprintf("%s:%s", host, port)
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+
+	if err != nil {
+		log.Println("could not connect to grpc server: ", err)
+		os.Exit(1)
+	}
+ 
+	grpcClient := pb.NewCalculatorServiceClient(conn)
 
 	for i := 0; i < gocount; i++ {
-		go func(cli *http.Client) {
+		go func() {
 			for {
 				time.Sleep(time.Second)
-				repget, err := cli.Do(reqget)
+				res, err := grpcClient.TaskGet(context.TODO(), nil)
 				if err != nil {
 					continue
 				}
-				if repget.StatusCode == 404 || repget.StatusCode == 500 {
-					continue // empty list
-				}
-				dataget := NewDataGet()
-				bdget, err := io.ReadAll(repget.Body)
+				arg1, err := strconv.ParseFloat(res.Arg1, 64) 
 				if err != nil {
 					fmt.Println(err)
 					continue
 				}
-				repget.Body.Close()
-				err = json.Unmarshal(bdget, dataget)
+				arg2, err := strconv.ParseFloat(res.Arg2, 64)
 				if err != nil {
 					fmt.Println(err)
 					continue
 				}
-				arg1, err := strconv.ParseFloat(dataget.Arg1, 64) 
-				if err != nil {
-					fmt.Println(err)
-					continue
-				}
-				arg2, err := strconv.ParseFloat(dataget.Arg2, 64)
-				if err != nil {
-					fmt.Println(err)
-					continue
-				}
-				result := resolve(arg1, arg2, dataget.Operation, dataget.Operation_time)
-				datapost := NewDataPost()
-				datapost.Id = dataget.Id
-				datapost.Resultat = strconv.FormatFloat(result, 'g', -1, 64)
-				jsonData, err := json.Marshal(datapost)
-				if err != nil {
-					fmt.Println(err) 
-					continue
-				}
-				bdpost := bytes.NewReader(jsonData)
-				reqpost, err := http.NewRequest(http.MethodPost, "http://localhost:8080/internal/task", bdpost)
-				if err != nil {
-					fmt.Println(err)
-					continue
-				}
-				reppost, err := cli.Do(reqpost)
-				if err != nil {
-					fmt.Println(err)
-					continue
-				}
-				if reppost.StatusCode != 200 {
-					fmt.Println(err) 
-					continue
-				}
+				result := resolve(arg1, arg2, res.Operation, int(res.OperationTime))
+				grpcClient.TaskPost(context.TODO(), &pb.TaskPostRequest{Id: res.Id, Resultat: strconv.FormatFloat(result, 'g', -1, 64)})
 			}
-		}(cl)
+		}()
 	}
 }
 

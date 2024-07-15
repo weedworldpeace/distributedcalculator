@@ -1,15 +1,24 @@
 package orchestrator
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/http"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+
+	pb "github.com/weedworldpeace/distributedcalculator/proto"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/emptypb"
 
 	"github.com/weedworldpeace/distributedcalculator/cmd/postfix"
 )
@@ -52,6 +61,61 @@ func newForTask() *fortask {
 var globalid int
 var miniglobalid int
 
+var miniexpressions = make(map[int]*fortask)
+var	miniresults = make(map[int]*result)
+
+type Server struct {
+	pb.CalculatorServiceServer
+} 
+
+func NewServer() *Server {
+	return &Server{}
+}
+
+var mu = sync.Mutex{}
+
+func (s *Server) TaskGet(ctx context.Context, _ *emptypb.Empty) (*pb.TaskGetResponse, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	for i, t := range miniexpressions{ 
+		defer delete(miniexpressions, i)
+		return &pb.TaskGetResponse{Id: int32(t.Id), Arg1: t.Arg1, Arg2: t.Arg2, Operation: t.Operation, OperationTime: int32(t.Operation_time)}, nil
+	}
+	return nil, status.Error(codes.OutOfRange, "no data")
+}
+
+func (s *Server) TaskPost(ctx context.Context, in *pb.TaskPostRequest) (*emptypb.Empty, error) {
+	res := newResult()
+	res.Id = int(in.Id)
+	res.Result = in.Resultat
+	mu.Lock()
+	miniresults[res.Id] = res
+	mu.Unlock()
+	return nil, nil
+}
+
+func grpcSer() {
+	host := "localhost"
+	port := "5000" // to change
+
+	addr := fmt.Sprintf("%s:%s", host, port)
+	lis, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Println("error starting tcp listener: ", err)
+		os.Exit(1)
+	}
+
+	log.Println("tcp listener started at port: ", port)
+
+	grpcServer := grpc.NewServer()
+	calcServiceServer := NewServer()
+	pb.RegisterCalculatorServiceServer(grpcServer, calcServiceServer)
+
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Println("error serving grpc: ", err)
+		os.Exit(1)
+	}
+}
 
 func forExpression(expressions *map[int]*expression, miniexpressions *map[int]*fortask, miniresults *map[int]*result, str []string, id int, mu *sync.Mutex) {
 	wg := sync.WaitGroup{}
@@ -100,6 +164,7 @@ func forExpression(expressions *map[int]*expression, miniexpressions *map[int]*f
 					miniglobalid += 1
 					minexp[fort.Id] = fort
 					mu.Unlock()
+					fmt.Println(fort.Operation_time)
 					for {
 						mu.Lock()
 						v, b := minres[fort.Id]
@@ -135,9 +200,6 @@ func forExpression(expressions *map[int]*expression, miniexpressions *map[int]*f
 
 func Orchestrator() {
 	expressions := make(map[int]*expression)
-	miniexpressions := make(map[int]*fortask)
-	miniresults := make(map[int]*result)
-	mu := sync.Mutex{}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/calculate", func(w http.ResponseWriter, r *http.Request) {
@@ -199,48 +261,49 @@ func Orchestrator() {
 		}
 	})
 
-	mux.HandleFunc("/internal/task", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			mu.Lock()
-			if len(miniexpressions) == 0 {
-				w.WriteHeader(404)
-			} else {
-				for i := range miniexpressions{
-					err := json.NewEncoder(w).Encode(miniexpressions[i])
-					if err != nil {
-						fmt.Println(err)
-					}
-					delete(miniexpressions, i)
-					break
-				}
-			}
-			mu.Unlock()
-		} else if r.Method == http.MethodPost {
-			res := newResult()
-			defer r.Body.Close()
-			iodata, err := io.ReadAll(r.Body)
-			if err != nil {
-				fmt.Println(err)
-				w.WriteHeader(500)
-				fmt.Fprint(w, "smth goes wrong")
-			} else {
-				err := json.Unmarshal(iodata, res)
-				if err != nil {
-					w.WriteHeader(422)
-					fmt.Fprint(w, "invalid data")
-				} else {
-					mu.Lock()
-					miniresults[res.Id] = res
-					mu.Unlock()
-					fmt.Fprint(w, "accepted")
-				}
-			}
-		} else {
-			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprint(w, "wrong request")
-		}
-	})
+	// mux.HandleFunc("/internal/task", func(w http.ResponseWriter, r *http.Request) {
+	// 	if r.Method == http.MethodGet {
+	// 		mu.Lock()
+	// 		if len(miniexpressions) == 0 {
+	// 			w.WriteHeader(404)
+	// 		} else {
+	// 			for i := range miniexpressions{
+	// 				err := json.NewEncoder(w).Encode(miniexpressions[i])
+	// 				if err != nil {
+	// 					fmt.Println(err)
+	// 				}
+	// 				delete(miniexpressions, i)
+	// 				break
+	// 			}
+	// 		}
+	// 		mu.Unlock()
+	// 	} else if r.Method == http.MethodPost {
+	// 		res := newResult()
+	// 		defer r.Body.Close()
+	// 		iodata, err := io.ReadAll(r.Body)
+	// 		if err != nil {
+	// 			fmt.Println(err)
+	// 			w.WriteHeader(500)
+	// 			fmt.Fprint(w, "smth goes wrong")
+	// 		} else {
+	// 			err := json.Unmarshal(iodata, res)
+	// 			if err != nil {
+	// 				w.WriteHeader(422)
+	// 				fmt.Fprint(w, "invalid data")
+	// 			} else {
+	// 				mu.Lock()
+	// 				miniresults[res.Id] = res
+	// 				mu.Unlock()
+	// 				fmt.Fprint(w, "accepted")
+	// 			}
+	// 		}
+	// 	} else {
+	// 		w.WriteHeader(http.StatusInternalServerError)
+	// 		fmt.Fprint(w, "wrong request")
+	// 	}
+	// })
 
+	go grpcSer()
 
 	http.ListenAndServe(":8080", mux)
 }
