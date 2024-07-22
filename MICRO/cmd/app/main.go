@@ -6,6 +6,7 @@ import (
 
 	"github.com/weedworldpeace/distributedcalculator/cmd/agent"
 	"github.com/weedworldpeace/distributedcalculator/cmd/orchestrator"
+	"github.com/weedworldpeace/distributedcalculator/cmd/sql"
 )
 
 func main() {
@@ -37,6 +38,8 @@ func main() {
 			fmt.Println("createenverr")
 		}
 	}  
+
+	sql.SqlUp()
 	go agent.Agent()
 	orchestrator.Orchestrator()
 }

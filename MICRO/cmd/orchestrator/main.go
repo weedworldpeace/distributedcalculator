@@ -20,16 +20,23 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 
+	"github.com/weedworldpeace/distributedcalculator/cmd/auth"
 	"github.com/weedworldpeace/distributedcalculator/cmd/postfix"
+	"github.com/weedworldpeace/distributedcalculator/cmd/sql"
 )
 
-type expression struct {
+type respBody struct { 
+	Token string `json:"token"`
+}
+
+type Expression struct {
 	Id int
 	Status string
 	Result float64
 }
 
 type calculate struct {
+	Token string `json:"token"`
 	Expression string `json:"expression"`
 }
 
@@ -58,7 +65,6 @@ func newForTask() *fortask {
 	return &fortask{}
 }
 
-var globalid int
 var miniglobalid int
 
 var miniexpressions = make(map[int]*fortask)
@@ -117,9 +123,8 @@ func grpcSer() {
 	}
 }
 
-func forExpression(expressions *map[int]*expression, miniexpressions *map[int]*fortask, miniresults *map[int]*result, str []string, id int, mu *sync.Mutex) {
+func forExpression(miniexpressions *map[int]*fortask, miniresults *map[int]*result, str []string, id int64, mu *sync.Mutex) {
 	wg := sync.WaitGroup{}
-	exp := *expressions
 	minexp := *miniexpressions
 	minres := *miniresults
 	supArr := []string{"+", "-", "*", "/"}
@@ -164,7 +169,6 @@ func forExpression(expressions *map[int]*expression, miniexpressions *map[int]*f
 					miniglobalid += 1
 					minexp[fort.Id] = fort
 					mu.Unlock()
-					fmt.Println(fort.Operation_time)
 					for {
 						mu.Lock()
 						v, b := minres[fort.Id]
@@ -192,116 +196,151 @@ func forExpression(expressions *map[int]*expression, miniexpressions *map[int]*f
 		fmt.Println(err)
 	} else {
 		mu.Lock()
-		exp[id].Result = finres
-		exp[id].Status = "resolved"
+		sql.MyDB.UpdateExpression(finres, int64(id))
 		mu.Unlock()
 	}
 }
 
 func Orchestrator() {
-	expressions := make(map[int]*expression)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/calculate", func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		bd, err := io.ReadAll(r.Body)
+		rb := newCalculate()
+		by, err := io.ReadAll(r.Body)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
-			fmt.Fprintf(w, "smth goes wrong")
+			w.Write([]byte("body err"))
+			return
+		}
+		err = json.Unmarshal(by, &rb)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("json err"))
+			return
+		}
+
+		login, err := auth.Validation(rb.Token)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		id, err := sql.MyDB.SelectID(login.(string))
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		
+		defer r.Body.Close()
+	
+		newStr, err := postfix.ToPostfix(rb.Expression)
+		if err != nil {
+			w.WriteHeader(422)
+			fmt.Fprint(w, "invalid data ", err)
 		} else {
-			data := newCalculate()
-			err := json.Unmarshal(bd, data)
+			mu.Lock()
+			expID, err := sql.MyDB.InsertExpression(int64(id))
 			if err != nil {
 				w.WriteHeader(http.StatusInternalServerError)
-				fmt.Fprint(w, "smth goes wrong")
-			} else {
-				newStr, err := postfix.ToPostfix(data.Expression)
-				if err != nil {
-					w.WriteHeader(422)
-					fmt.Fprint(w, "invalid data ", err)
-				} else {
-					mu.Lock()
-					id := globalid
-					globalid += 1
-					expressions[id] = &expression{id,  "accepted", 0}
-					mu.Unlock()
-					w.WriteHeader(201)
-					resp := "id = " + strconv.Itoa(id)
-					fmt.Fprint(w, "accepted, " + resp)
-					go forExpression(&expressions, &miniexpressions, &miniresults, newStr, id, &mu)
-				}
+				fmt.Fprint(w, err)
+				return
 			}
+			mu.Unlock()
+			w.WriteHeader(201)
+			resp := "id = " + strconv.Itoa(int(expID))
+			fmt.Fprint(w, "accepted, " + resp)
+			go forExpression(&miniexpressions, &miniresults, newStr, expID, &mu)
 		}
+	
+	
 	})
 
 	mux.HandleFunc("/api/v1/expressions", func(w http.ResponseWriter, r *http.Request) {
-		resp := make(map[string][]expression)
-		resparr := []expression{}
-		for i := range expressions {
-			newexp := *expressions[i]
-			resparr = append(resparr, newexp)
+		rb := respBody{}
+		by, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("body err"))
+			return
 		}
-		resp["expressions"] = resparr
-		json.NewEncoder(w).Encode(resp)
+		err = json.Unmarshal(by, &rb)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("json err"))
+			return
+		}
+
+		login, err := auth.Validation(rb.Token)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+			return
+		}
+		id, err := sql.MyDB.SelectID(login.(string))
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+			return
+		}
+
+		exps, err := sql.MyDB.SelectExpressions(int64(id))
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+			return
+		}
+
+		json.NewEncoder(w).Encode(exps)
 	})
 
 	mux.HandleFunc("/api/v1/expressions/", func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		id, err := strconv.Atoi(strings.Split(path, "expressions/")[1])
+		rb := respBody{}
+		by, err := io.ReadAll(r.Body)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("body err"))
+			return
+		}
+		err = json.Unmarshal(by, &rb)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("json err"))
+			return
+		}
+
+		login, err := auth.Validation(rb.Token)
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+			return
+		}
+
+		userid, err := sql.MyDB.SelectID(login.(string))
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(err.Error()))
+			return
+		}
+
+		expID, err := strconv.Atoi(strings.Split(r.URL.Path, "expressions/")[1])
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprint(w, "invalid id")
-		} else if len(expressions) <= id {
-			w.WriteHeader(http.StatusNotFound) 
-			fmt.Fprint(w, "bad id")
 		} else {
-			resp := make(map[string]expression)
-			resp["expression"] = *expressions[id]
-			json.NewEncoder(w).Encode(resp)
+			exp, err := sql.MyDB.SelectExpressionById(int64(expID), userid)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+				w.Write([]byte(err.Error()))
+				return
+			}
+			json.NewEncoder(w).Encode(exp)
 		}
 	})
 
-	// mux.HandleFunc("/internal/task", func(w http.ResponseWriter, r *http.Request) {
-	// 	if r.Method == http.MethodGet {
-	// 		mu.Lock()
-	// 		if len(miniexpressions) == 0 {
-	// 			w.WriteHeader(404)
-	// 		} else {
-	// 			for i := range miniexpressions{
-	// 				err := json.NewEncoder(w).Encode(miniexpressions[i])
-	// 				if err != nil {
-	// 					fmt.Println(err)
-	// 				}
-	// 				delete(miniexpressions, i)
-	// 				break
-	// 			}
-	// 		}
-	// 		mu.Unlock()
-	// 	} else if r.Method == http.MethodPost {
-	// 		res := newResult()
-	// 		defer r.Body.Close()
-	// 		iodata, err := io.ReadAll(r.Body)
-	// 		if err != nil {
-	// 			fmt.Println(err)
-	// 			w.WriteHeader(500)
-	// 			fmt.Fprint(w, "smth goes wrong")
-	// 		} else {
-	// 			err := json.Unmarshal(iodata, res)
-	// 			if err != nil {
-	// 				w.WriteHeader(422)
-	// 				fmt.Fprint(w, "invalid data")
-	// 			} else {
-	// 				mu.Lock()
-	// 				miniresults[res.Id] = res
-	// 				mu.Unlock()
-	// 				fmt.Fprint(w, "accepted")
-	// 			}
-	// 		}
-	// 	} else {
-	// 		w.WriteHeader(http.StatusInternalServerError)
-	// 		fmt.Fprint(w, "wrong request")
-	// 	}
-	// })
+	mux.HandleFunc("/api/v1/register", auth.Register)
+
+	mux.HandleFunc("/api/v1/login", auth.Login)
 
 	go grpcSer()
 
