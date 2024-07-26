@@ -1,43 +1,62 @@
 Распределенный калькулятор 
 
-- На порту 8080 запускается сервер, который принимает и хранит выражения.
+- На порту 8080 запускается сервер, который регистрирует пользователей, принимает и отправляет выражения оркестратору, сохраняет их в базе данных.
 - Оркестратор разбивает их на простые задачки и помещает в очередь.
-- Агенты подбирают задачки из очереди, вычисляют и отправляют решения обратно.
+- Агенты обращаются к оркестратору с помощью GRPC, подбирают задачки из очереди, вычисляют и отправляют решения обратно.
 - Оркестратор собирает новое выражение из полученных результатов.
 - ...Повторение до конечного результата.
 
 Для запуска:
-  - Скачать и запустить файл build.exe !от имени администратора! (Код писался на windows 10 с версией go 1.22.0)
+  - Скачать и запустить файл main.exe !от имени администратора! (Код писался на windows 10 с версией go 1.22.0)
 
 Для взаимодействия:
   - Открыть командную строку и отправить запросы по 8080 порту
 
 Возможные запросы:
-  - curl http://localhost:8080/api/v1/expressions //для получения списка выражений
+  - curl --header "Content-Type:application/json" --data "{\\"login\\": \\"<логин>\\", \\"password\\": \\"<пароль>\\"}" http://localhost:8080/api/v1/register
      - Возможные ответы:
-       - {"expressions":[{"Id":0,"Status":"resolved","Result":0},{"Id":1,"Status":"resolved","Result":-1}]} (200) // список выражений
+       - try another login // логин занят
+       - user registered // пользователь зарегистрирован
+  - curl --header "Content-Type:application/json" --data "{\\"login\\": \\"<логин>\\", \\"password\\": \\"<пароль>\\"}" http://localhost:8080/api/v1/login
+     - Возможные ответы:
+       - wrong password // неверный пароль
+       - ошибки бд
+       - <токен>
+  - curl --header "Content-Type:application/json" --data "{\\"token\\": \\"<токен>\\"}" http://localhost:8080/api/v1/expressions //для получения списка выражений
+     - Возможные ответы:
+       - [{"Id":0,"Status":"resolved","Result":0},{"Id":1,"Status":"resolved","Result":-1}] (200) // список выражений
+       - ошибки токена
+       - ошибки бд
    
-  - curl http://localhost:8080/api/v1/expressions/:id //для получения определенного выражения
+  - curl --header "Content-Type:application/json" --data "{\\"token\\": \\"<токен>\\"}" http://localhost:8080/api/v1/expressions/:id //для получения определенного выражения
      - Возможные ответы:  
-       - {"expression":{"Id":0,"Status":"resolved","Result":0}} (200) // id выражения, его статус(accepted(принят на вычисление) или     resolved(решено)) и результат
-       - bad id (404) // выражения по такому id не существует
+       - {"Id":0,"Status":"accepted","Result":0} (200) // id выражения, его статус(accepted(принят на вычисление) или resolved(решено)) и результат
        - invalid id (500) // некорректный id
+       - no rights (500) // id выражения не относится к данному пользователю
+       - ошибки токена
+       - ошибки бд
    
-  - curl --header "Content-Type:application/json" --data "{\\"expression\\": \\"<выражение>\\"}" http://localhost:8080/api/v1/calculate //для отправки выражения на вычисление
+  - curl --header "Content-Type:application/json" --data "{\\"expression\\": \\"<выражение>\\", \\"token\\": \\"<токен>\\"}" http://localhost:8080/api/v1/calculate //для отправки выражения на вычисление
      - Возможные ответы:  
        - accepted, id = 0 (201) // выражение принято и его id
        - smth goes wrong (500) // ошибка на сервере
        - invalid data <...> (422) // некорректное выражение и ошибка в выражении
+       - ошибки токена
+       - ошибки бд
 
 Пример взаимодействия с сервером:
-  - curl --header "Content-Type:application/json" --data "{\\"expression\\": \\"10 + -99\\"}" http://localhost:8080/api/v1/calculate
-    - accepted, id = 0
-  - curl --header "Content-Type:application/json" --data "{\\"expression\\": \\"(2.5 * 4) + (3.5 * -5)\\"}" http://localhost:8080/api/v1/calculate
+  - curl --header "Content-Type:application/json" --data "{\\"login\\": \\"test\\", \\"password\\": \\"test\\"}" http://localhost:8080/api/v1/register
+    - user registered
+  - curl --header "Content-Type:application/json" --data "{\\"login\\": \\"test\\", \\"password\\": \\"test\\"}" http://localhost:8080/api/v1/login
+    - <ТОКЕН> // вставлять в body всех последующих запросов как в примере
+  - curl --header "Content-Type:application/json" --data "{\\"expression\\": \\"10 + -99\\", \\"token\\": \\"<ТОКЕН>\\"}" http://localhost:8080/api/v1/calculate
     - accepted, id = 1
-  - curl http://localhost:8080/api/v1/expressions
-    - {"expressions":[{"Id":0,"Status":"resolved","Result":-89},{"Id":1,"Status":"resolved","Result":-7.5}]}
-  - curl http://localhost:8080/api/v1/expressions/1
-    - {"expression":{"Id":1,"Status":"resolved","Result":-7.5}}
+  - curl --header "Content-Type:application/json" --data "{\\"expression\\": \\"(2.5 * 4) + (3.5 * -5)\\", \\"token\\": \\"<ТОКЕН>\\"}" http://localhost:8080/api/v1/calculate
+    - accepted, id = 2
+  - curl --header "Content-Type:application/json" --data "{\\"token\\": \\"<ТОКЕН>\\"}" http://localhost:8080/api/v1/expressions
+    - {"expressions":[{"Id":1,"Status":"resolved","Result":-89},{"Id":2,"Status":"resolved","Result":-7.5}]}
+  - curl --header "Content-Type:application/json" --data "{\\"token\\": \\"<ТОКЕН>\\"}" http://localhost:8080/api/v1/expressions/2
+    - {"expression":{"Id":2,"Status":"resolved","Result":-7.5}}
 
 Примечание:
   - Выражения могут быть как с целыми числами, так и с дробными
